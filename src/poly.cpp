@@ -35,7 +35,7 @@ Array<f64> deriv_raw(ArrayRef<f64> p, Allocator* alloc) {
     const usize n = p.size() - 1;
     r.resize(n);
     for (usize i = 0; i < n; ++i) {
-        r[i] = p[i] * static_cast<f64>(n - i);
+        r[i] = p[i] * as<f64>(n - i);
     }
     return r;
 }
@@ -75,13 +75,13 @@ Array<c64> taylor_coeffs_c64(ArrayRef<c64> c, c64 p, usize order, Allocator* all
             for (usize i = 1; i < q.size(); ++i) acc = acc * p + q[i];
         }
         t.push_back(acc / fact);
-        fact *= c64(static_cast<f64>(d) + 1.0, 0.0);
+        fact *= c64(as<f64>(d) + 1.0, 0.0);
         if (q.size() > 1) {
             const usize n = q.size() - 1;
             Array<c64> dq(alloc);
             dq.resize(n);
             for (usize i = 0; i < n; ++i) {
-                dq[i] = q[i] * static_cast<f64>(n - i);
+                dq[i] = q[i] * as<f64>(n - i);
             }
             q = move(dq);
         } else {
@@ -225,7 +225,7 @@ Array<c64> roots(ArrayRef<c64> coeffs, Allocator* alloc) {
     r.resize(n);
     constexpr f64 kTwoPi = 6.28318530717958647692;
     for (usize k = 0; k < n; ++k) {
-        const f64 theta = kTwoPi * static_cast<f64>(k) / static_cast<f64>(n) + 0.4;
+        const f64 theta = kTwoPi * as<f64>(k) / as<f64>(n) + 0.4;
         r[k] = c64(radius * cos(theta), radius * sin(theta));
     }
 
@@ -400,7 +400,7 @@ Array<f64> integ(ArrayRef<f64> p, f64 k, Allocator* alloc) {
     const usize n = p.size();
     r.resize(n + 1);
     for (usize i = 0; i < n; ++i) {
-        r[i] = p[i] / static_cast<f64>(n - i);
+        r[i] = p[i] / as<f64>(n - i);
     }
     r[n] = k;
     return r;
@@ -418,9 +418,9 @@ FitResult polyfit(ArrayRef<f64> x, ArrayRef<f64> y, i32 deg, Allocator* alloc) {
         return res;
     }
 
-    const usize np = static_cast<usize>(deg) + 1;
+    const usize np = as<usize>(deg) + 1;
     if (np > m) {
-        FitResult sub = polyfit(x, y, static_cast<i32>(m - 1), alloc);
+        FitResult sub = polyfit(x, y, as<i32>(m - 1), alloc);
         if (!sub.ok()) return sub;
         res.coeffs.resize(np);
         const usize offset = np - m;
@@ -434,7 +434,7 @@ FitResult polyfit(ArrayRef<f64> x, ArrayRef<f64> y, i32 deg, Allocator* alloc) {
     a_mat.resize(m * np);
     for (usize i = 0; i < m; ++i) {
         for (usize j = 0; j < np; ++j) {
-            a_mat[j * m + i] = pow(x[i], static_cast<f64>(deg - static_cast<i32>(j)));
+            a_mat[j * m + i] = pow(x[i], as<f64>(deg - as<i32>(j)));
         }
     }
 
@@ -497,14 +497,14 @@ PadeResult pade_delay(f64 t, i32 order, Allocator* alloc) {
         res.status = Status::InvalidInput;
         return res;
     }
-    const usize n = static_cast<usize>(order) + 1;
+    const usize n = as<usize>(order) + 1;
     Array<f64> a(alloc);
     a.resize(n);
     a[0] = 1.0;
     for (i32 k = 0; k < order; ++k) {
-        a[static_cast<usize>(k + 1)] =
-            a[static_cast<usize>(k)] * static_cast<f64>(order - k) /
-            (static_cast<f64>(2 * order - k) * static_cast<f64>(k + 1));
+        a[as<usize>(k + 1)] =
+            a[as<usize>(k)] * as<f64>(order - k) /
+            (as<f64>(2 * order - k) * as<f64>(k + 1));
     }
 
     res.num.resize(n);
@@ -512,9 +512,9 @@ PadeResult pade_delay(f64 t, i32 order, Allocator* alloc) {
     f64 pow_neg_t = 1.0;
     f64 pow_t = 1.0;
     for (i32 k = 0; k <= order; ++k) {
-        const usize idx = static_cast<usize>(order - k);
-        res.num[idx] = a[static_cast<usize>(k)] * pow_neg_t;
-        res.den[idx] = a[static_cast<usize>(k)] * pow_t;
+        const usize idx = as<usize>(order - k);
+        res.num[idx] = a[as<usize>(k)] * pow_neg_t;
+        res.den[idx] = a[as<usize>(k)] * pow_t;
         pow_neg_t *= -t;
         pow_t *= t;
     }
@@ -598,16 +598,16 @@ ResidueResult residue(ArrayRef<f64> b, ArrayRef<f64> a, Allocator* alloc) {
                 }
             }
             if (g.m > 1) {
-                g.p /= static_cast<f64>(g.m);
+                g.p /= as<f64>(g.m);
                 if (abs(g.p.imag()) < 5e-4 * (1.0 + abs(g.p))) {
                     g.p = c64(g.p.real(), 0.0);
                 }
-                const f64 m_d = static_cast<f64>(g.m);
+                const f64 m_d = as<f64>(g.m);
                 for (i32 it = 0; it < 30; ++it) {
                     const c64 fv = polyval(ArrayRef<c64>(a_cx.data(), a_cx.size()), g.p);
                     c64 dacc(0.0, 0.0);
                     for (usize k = 0; k + 1 < a_cx.size(); ++k) {
-                        dacc = dacc * g.p + a_cx[k] * static_cast<f64>(a_cx.size() - 1 - k);
+                        dacc = dacc * g.p + a_cx[k] * as<f64>(a_cx.size() - 1 - k);
                     }
                     if (abs(dacc) < 1e-300) break;
                     const c64 step = m_d * fv / dacc;
@@ -625,7 +625,7 @@ ResidueResult residue(ArrayRef<f64> b, ArrayRef<f64> a, Allocator* alloc) {
     if (a_poly.size() > 1) {
         const usize n = a_poly.size() - 1;
         a_prime.resize(n);
-        for (usize i = 0; i < n; ++i) a_prime[i] = a_poly[i] * static_cast<f64>(n - i);
+        for (usize i = 0; i < n; ++i) a_prime[i] = a_poly[i] * as<f64>(n - i);
     }
 
     out.r.reserve(poles.size());
