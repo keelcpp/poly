@@ -1,0 +1,12 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(keel)
+
+include("${CMAKE_CURRENT_LIST_DIR}/keel_polyTargets.cmake")
+
+if(TARGET keel::keel_poly AND NOT TARGET keel::poly)
+    add_library(keel::poly ALIAS keel::keel_poly)
+endif()
+
+check_required_components(keel_poly)
