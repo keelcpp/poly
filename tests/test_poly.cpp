@@ -1,22 +1,21 @@
+#include <keel/format.h>
+#include <keel/math.h>
 #include <keel/poly.h>
-
-#include <cmath>
-#include <cstdio>
 
 namespace {
 
-int g_failures = 0;
+keel::i32 g_failures = 0;
 
 void check(bool cond, const char* msg) {
     if (!cond) {
-        std::fprintf(stderr, "FAIL: %s\n", msg);
+        keel::eprintln("FAIL: %s", msg);
         ++g_failures;
     }
 }
 
 void check_near(keel::f64 got, keel::f64 expected, keel::f64 tol, const char* msg) {
-    if (std::fabs(got - expected) > tol || std::isnan(got)) {
-        std::fprintf(stderr, "FAIL: %s (got %.15g, expected %.15g, tol %.3g)\n", msg, got, expected, tol);
+    if (keel::abs(got - expected) > tol || keel::is_nan(got)) {
+        keel::eprintln("FAIL: %s (got %.15g, expected %.15g, tol %.3g)", msg, got, expected, tol);
         ++g_failures;
     }
 }
@@ -130,9 +129,9 @@ int main() {
     test_polyfit_and_pade();
     test_residue_and_residuez();
     if (g_failures == 0) {
-        std::printf("ALL keel::poly TESTS PASSED\n");
+        keel::println("ALL keel::poly TESTS PASSED");
         return 0;
     }
-    std::fprintf(stderr, "%d FAILURE(S)\n", g_failures);
+    keel::eprintln("%d FAILURE(S)", g_failures);
     return 1;
 }
