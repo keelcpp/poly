@@ -25,6 +25,61 @@ Array<f64> strip_leading_copy(ArrayRef<f64> in, Allocator* alloc) {
     return v;
 }
 
+Array<f64> strip_trailing_copy(ArrayRef<f64> in, Allocator* alloc) {
+    Array<f64> v(alloc);
+    if (in.empty()) return v;
+    usize hi = in.size();
+    while (hi > 1 && in[hi - 1] == 0.0) --hi;
+    v.resize(hi);
+    for (usize i = 0; i < hi; ++i) v[i] = in[i];
+    return v;
+}
+
+bool all_finite_f64(ArrayRef<f64> v) noexcept {
+    for (usize i = 0; i < v.size(); ++i) {
+        if (!is_finite(v[i])) return false;
+    }
+    return true;
+}
+
+bool all_finite_c64(ArrayRef<c64> v) noexcept {
+    for (usize i = 0; i < v.size(); ++i) {
+        if (!is_finite(v[i].real()) || !is_finite(v[i].imag())) return false;
+    }
+    return true;
+}
+
+c64 refine_multiple_root_real_poly(ArrayRef<c64> a_cx, c64 p, usize mult, Allocator* alloc) {
+    if (mult <= 1 || a_cx.size() <= mult) return p;
+    Array<c64> d(alloc);
+    d.resize(a_cx.size());
+    for (usize i = 0; i < a_cx.size(); ++i) d[i] = a_cx[i];
+    // Differentiate (mult - 1) times so the m-fold root becomes a simple root of d(s).
+    for (usize k = 0; k + 1 < mult; ++k) {
+        const usize n = d.size() - 1;
+        Array<c64> next_d(alloc);
+        next_d.resize(n);
+        for (usize i = 0; i < n; ++i) {
+            next_d[i] = d[i] * as<f64>(n - i);
+        }
+        d = move(next_d);
+    }
+    for (i32 it = 0; it < 25; ++it) {
+        c64 fv;
+        c64 dfv;
+        horner_deriv(ArrayRef<c64>(d.data(), d.size()), p, fv, dfv);
+        if (!is_finite(fv.real()) || !is_finite(fv.imag()) || abs(dfv) < 1e-300) break;
+        const c64 step = fv / dfv;
+        if (!is_finite(step.real()) || !is_finite(step.imag())) break;
+        p -= step;
+        if (abs(step) <= 1e-15 * max(1.0, abs(p))) break;
+    }
+    if (abs(p.imag()) < 1e-12 * max(1.0, abs(p))) {
+        p = c64(p.real(), 0.0);
+    }
+    return p;
+}
+
 Array<f64> deriv_raw(ArrayRef<f64> p, Allocator* alloc) {
     Array<f64> r(alloc);
     if (p.size() <= 1) {
@@ -162,10 +217,13 @@ void horner_deriv(ArrayRef<c64> coeffs, c64 z, c64& out_p, c64& out_dp) noexcept
 
 Array<c64> polyvalm(ArrayRef<c64> coeffs, ArrayRef<c64> a_colmajor, usize n, Allocator* alloc) {
     Array<c64> result(alloc);
+    if (n == 0 || a_colmajor.size() / n < n) {
+        return result;
+    }
     const usize nn = n * n;
     result.resize(nn);
     for (usize i = 0; i < nn; ++i) result[i] = c64(0.0, 0.0);
-    if (coeffs.empty() || n == 0 || a_colmajor.size() < nn) {
+    if (coeffs.empty()) {
         return result;
     }
 
@@ -212,42 +270,135 @@ Array<c64> roots(ArrayRef<c64> coeffs, Allocator* alloc) {
     }
 
     const usize m = hi - lo;
+    const usize n = m - 1;
+    if (!all_finite_c64(ArrayRef<c64>(coeffs.data() + lo, m))) {
+        Array<c64> nan_out(alloc);
+        nan_out.resize(orig_zeros + n);
+        for (usize i = 0; i < orig_zeros + n; ++i) nan_out[i] = c64(kNaN, kNaN);
+        return nan_out;
+    }
+
     Array<c64> c(alloc);
     c.resize(m);
-    for (usize i = 0; i < m; ++i) c[i] = coeffs[lo + i] / coeffs[lo];
-    const usize n = m - 1;
-
-    f64 max_coef = 0.0;
-    for (usize i = 1; i <= n; ++i) max_coef = max(max_coef, abs(c[i]));
-    const f64 radius = 1.0 + max_coef;
+    const c64 lead = coeffs[lo];
+    for (usize i = 0; i < m; ++i) c[i] = coeffs[lo + i] / lead;
+    if (!all_finite_c64(ArrayRef<c64>(c.data(), m))) {
+        Array<c64> nan_out(alloc);
+        nan_out.resize(orig_zeros + n);
+        for (usize i = 0; i < orig_zeros + n; ++i) nan_out[i] = c64(kNaN, kNaN);
+        return nan_out;
+    }
 
     Array<c64> r(alloc);
     r.resize(n);
-    constexpr f64 kTwoPi = 6.28318530717958647692;
-    for (usize k = 0; k < n; ++k) {
-        const f64 theta = kTwoPi * as<f64>(k) / as<f64>(n) + 0.4;
-        r[k] = c64(radius * cos(theta), radius * sin(theta));
-    }
 
-    constexpr i32 kMaxIter = 200;
-    constexpr f64 kTol = 1e-14;
-    for (i32 it = 0; it < kMaxIter; ++it) {
-        f64 max_step = 0.0;
-        for (usize k = 0; k < n; ++k) {
-            c64 pv;
-            c64 dpv;
-            horner_deriv(ArrayRef<c64>(c.data(), c.size()), r[k], pv, dpv);
-            c64 denom(1.0, 0.0);
-            for (usize j = 0; j < n; ++j) {
-                if (j != k) denom *= (r[k] - r[j]);
-            }
-            if (abs(denom) < 1e-300) continue;
-            const c64 step = pv / denom;
-            r[k] -= step;
-            const f64 s = abs(step);
-            if (s > max_step) max_step = s;
+    if (n == 1) {
+        r[0] = -c[1];
+    } else if (n == 2) {
+        const c64 b = c[1];
+        const c64 c2 = c[2];
+        c64 disc = sqrt(b * b - c64(4.0, 0.0) * c2);
+        if (b.real() * disc.real() + b.imag() * disc.imag() < 0.0) {
+            disc = -disc;
         }
-        if (max_step < kTol) break;
+        const c64 q = c64(-0.5, 0.0) * (b + disc);
+        r[0] = q;
+        r[1] = (abs(q) > 0.0) ? (c2 / q) : c64(0.0, 0.0);
+    } else {
+        // Power-of-two Fujiwara root scale: zero rounding error, prevents overflow/underflow.
+        f64 max_r = 0.0;
+        for (usize k = 1; k <= n; ++k) {
+            const f64 ak = abs(c[k]);
+            if (ak > 0.0) {
+                const f64 rk = pow(ak, 1.0 / as<f64>(k));
+                if (rk > max_r) max_r = rk;
+            }
+        }
+        i32 s_exp = 0;
+        if (max_r > 0.0 && is_finite(max_r)) {
+            s_exp = as<i32>(floor(log2(max_r)));
+        }
+
+        Array<c64> cs(alloc);
+        cs.resize(m);
+        cs[0] = c64(1.0, 0.0);
+        for (usize k = 1; k <= n; ++k) {
+            const i32 shift = -as<i32>(k) * s_exp;
+            cs[k] = c64(ldexp(c[k].real(), shift), ldexp(c[k].imag(), shift));
+        }
+        Array<c64> rev_cs(alloc);
+        rev_cs.resize(m);
+        for (usize k = 0; k < m; ++k) rev_cs[k] = cs[n - k];
+
+        const f64 geom = pow(abs(cs[n]), 1.0 / as<f64>(n));
+        const f64 radius = clamp(0.5 * (1.0 + geom), 0.5, 2.0);
+        for (usize k = 0; k < n; ++k) {
+            const f64 theta = kTau * as<f64>(k) / as<f64>(n) + 0.123456789;
+            r[k] = c64(radius * cos(theta), radius * sin(theta));
+        }
+
+        constexpr i32 kMaxIter = 500;
+        constexpr f64 kRelTol = 1e-14;
+        const f64 n_f = as<f64>(n);
+        for (i32 it = 0; it < kMaxIter; ++it) {
+            f64 max_rel = 0.0;
+            for (usize k = 0; k < n; ++k) {
+                const c64 wk = r[k];
+                c64 newton(0.0, 0.0);
+                bool exact_zero = false;
+                if (abs(wk) <= 1.0) {
+                    c64 pv;
+                    c64 dpv;
+                    horner_deriv(ArrayRef<c64>(cs.data(), m), wk, pv, dpv);
+                    if (abs(pv) == 0.0) {
+                        exact_zero = true;
+                    } else if (abs(dpv) > 1e-300) {
+                        newton = pv / dpv;
+                    } else {
+                        newton = c64(1e-6, 1e-6);
+                    }
+                } else {
+                    const c64 u = c64(1.0, 0.0) / wk;
+                    c64 qv;
+                    c64 dqv;
+                    horner_deriv(ArrayRef<c64>(rev_cs.data(), m), u, qv, dqv);
+                    if (abs(qv) == 0.0) {
+                        exact_zero = true;
+                    } else {
+                        const c64 denom_p = c64(n_f, 0.0) * qv - u * dqv;
+                        if (abs(denom_p) > 1e-300) {
+                            newton = (wk * qv) / denom_p;
+                        } else {
+                            newton = c64(1e-6, 1e-6);
+                        }
+                    }
+                }
+                if (exact_zero) continue;
+
+                c64 aberth_sum(0.0, 0.0);
+                for (usize j = 0; j < n; ++j) {
+                    if (j == k) continue;
+                    const c64 diff = wk - r[j];
+                    if (abs(diff) > 1e-300) {
+                        aberth_sum += c64(1.0, 0.0) / diff;
+                    }
+                }
+                const c64 denom = c64(1.0, 0.0) - newton * aberth_sum;
+                const c64 step = (abs(denom) > 1e-300) ? (newton / denom) : newton;
+                if (is_finite(step.real()) && is_finite(step.imag())) {
+                    r[k] -= step;
+                    const f64 rel = abs(step) / max(1.0, abs(r[k]));
+                    if (rel > max_rel) max_rel = rel;
+                }
+            }
+            if (max_rel < kRelTol) break;
+        }
+
+        if (s_exp != 0) {
+            for (usize k = 0; k < n; ++k) {
+                r[k] = c64(ldexp(r[k].real(), s_exp), ldexp(r[k].imag(), s_exp));
+            }
+        }
     }
 
     if (orig_zeros > 0) {
@@ -413,7 +564,7 @@ Array<f64> integ(ArrayRef<f64> p, f64 k, Allocator* alloc) {
 FitResult polyfit(ArrayRef<f64> x, ArrayRef<f64> y, i32 deg, Allocator* alloc) {
     FitResult res{Status::Ok, Array<f64>(alloc)};
     const usize m = x.size();
-    if (m == 0 || y.size() != m || deg < 0) {
+    if (m == 0 || y.size() != m || deg < 0 || !all_finite_f64(x) || !all_finite_f64(y)) {
         res.status = Status::InvalidInput;
         return res;
     }
@@ -429,12 +580,43 @@ FitResult polyfit(ArrayRef<f64> x, ArrayRef<f64> y, i32 deg, Allocator* alloc) {
         return res;
     }
 
-    // Vandermonde A[j * m + i] = x[i]^(deg - j), column-major.
+    if (deg == 0) {
+        f64 sum_y = 0.0;
+        for (usize i = 0; i < m; ++i) sum_y += y[i];
+        res.coeffs.resize(1);
+        res.coeffs[0] = sum_y / as<f64>(m);
+        return res;
+    }
+
+    // Center and scale x to t = (x - mu) / sigma for a well-conditioned Vandermonde matrix.
+    f64 mu = 0.0;
+    for (usize i = 0; i < m; ++i) mu += x[i];
+    mu /= as<f64>(m);
+
+    f64 var = 0.0;
+    for (usize i = 0; i < m; ++i) {
+        const f64 dx = x[i] - mu;
+        var += dx * dx;
+    }
+    const f64 sigma = sqrt(var / as<f64>(m));
+    if (sigma == 0.0) {
+        f64 sum_y = 0.0;
+        for (usize i = 0; i < m; ++i) sum_y += y[i];
+        res.coeffs.resize(np);
+        for (usize j = 0; j + 1 < np; ++j) res.coeffs[j] = 0.0;
+        res.coeffs[np - 1] = sum_y / as<f64>(m);
+        return res;
+    }
+
+    // Vandermonde A[j * m + i] = t[i]^(deg - j), column-major, built via repeated multiplication.
     Array<f64> a_mat(alloc);
     a_mat.resize(m * np);
     for (usize i = 0; i < m; ++i) {
-        for (usize j = 0; j < np; ++j) {
-            a_mat[j * m + i] = pow(x[i], as<f64>(deg - as<i32>(j)));
+        const f64 ti = (x[i] - mu) / sigma;
+        f64 p_val = 1.0;
+        for (usize jj = np; jj > 0; --jj) {
+            a_mat[(jj - 1) * m + i] = p_val;
+            p_val *= ti;
         }
     }
 
@@ -476,14 +658,41 @@ FitResult polyfit(ArrayRef<f64> x, ArrayRef<f64> y, i32 deg, Allocator* alloc) {
         a_mat[k * m + k] = alpha;
     }
 
-    res.coeffs.resize(np);
+    f64 max_diag = 0.0;
+    for (usize k = 0; k < np; ++k) {
+        const f64 d = abs(a_mat[k * m + k]);
+        if (d > max_diag) max_diag = d;
+    }
+    const f64 diag_tol = 1e-14 * max_diag;
+
+    Array<f64> q(alloc);
+    q.resize(np);
     for (usize kk = np; kk > 0; --kk) {
         const usize k = kk - 1;
         f64 s = rhs[k];
-        for (usize c = k + 1; c < np; ++c) s -= a_mat[c * m + k] * res.coeffs[c];
+        for (usize c = k + 1; c < np; ++c) s -= a_mat[c * m + k] * q[c];
         const f64 diag = a_mat[k * m + k];
-        res.coeffs[k] = (abs(diag) > 0.0) ? (s / diag) : 0.0;
+        q[k] = (abs(diag) > diag_tol) ? (s / diag) : 0.0;
     }
+
+    // Expand p(x) = q((x - mu) / sigma) = q(a_lin * x + b_lin) via Horner polynomial composition.
+    const f64 a_lin = 1.0 / sigma;
+    const f64 b_lin = -mu / sigma;
+    Array<f64> cur(alloc);
+    Array<f64> nxt(alloc);
+    cur.resize(np);
+    nxt.resize(np);
+    cur[0] = q[0];
+    for (usize step = 1; step < np; ++step) {
+        nxt[0] = cur[0] * a_lin;
+        for (usize j = 1; j < step; ++j) {
+            nxt[j] = cur[j] * a_lin + cur[j - 1] * b_lin;
+        }
+        nxt[step] = cur[step - 1] * b_lin + q[step];
+        for (usize j = 0; j <= step; ++j) cur[j] = nxt[j];
+    }
+
+    res.coeffs = move(cur);
     return res;
 }
 
@@ -493,38 +702,33 @@ FitResult polyfit(ArrayRef<f64> x, ArrayRef<f64> y, i32 deg, Allocator* alloc) {
 
 PadeResult pade_delay(f64 t, i32 order, Allocator* alloc) {
     PadeResult res{Status::Ok, Array<f64>(alloc), Array<f64>(alloc)};
-    if (order < 0) {
+    if (order < 0 || !is_finite(t) || t < 0.0) {
         res.status = Status::InvalidInput;
         return res;
     }
-    const usize n = as<usize>(order) + 1;
-    Array<f64> a(alloc);
-    a.resize(n);
-    a[0] = 1.0;
-    for (i32 k = 0; k < order; ++k) {
-        a[as<usize>(k + 1)] =
-            a[as<usize>(k)] * as<f64>(order - k) /
-            (as<f64>(2 * order - k) * as<f64>(k + 1));
+    if (t == 0.0 || order == 0) {
+        res.num.resize(1);
+        res.den.resize(1);
+        res.num[0] = 1.0;
+        res.den[0] = 1.0;
+        return res;
     }
 
+    // Monic [n/n] Pade of exp(-t*s):
+    //   den[0] = 1, den[k] = den[k-1] * (n + k) * (n - k + 1) / (k * t)
+    //   num[k] = (-1)^(n - k) * den[k]
+    const usize n = as<usize>(order) + 1;
     res.num.resize(n);
     res.den.resize(n);
-    f64 pow_neg_t = 1.0;
-    f64 pow_t = 1.0;
-    for (i32 k = 0; k <= order; ++k) {
-        const usize idx = as<usize>(order - k);
-        res.num[idx] = a[as<usize>(k)] * pow_neg_t;
-        res.den[idx] = a[as<usize>(k)] * pow_t;
-        pow_neg_t *= -t;
-        pow_t *= t;
+    res.den[0] = 1.0;
+    for (i32 k = 1; k <= order; ++k) {
+        const f64 factor =
+            (as<f64>(order + k) * as<f64>(order - k + 1)) / (as<f64>(k) * t);
+        res.den[as<usize>(k)] = res.den[as<usize>(k - 1)] * factor;
     }
-
-    const f64 scale = res.den[0];
-    if (scale != 0.0) {
-        for (usize i = 0; i < n; ++i) {
-            res.num[i] /= scale;
-            res.den[i] /= scale;
-        }
+    for (i32 k = 0; k <= order; ++k) {
+        const f64 sign = (((order - k) & 1) == 0) ? 1.0 : -1.0;
+        res.num[as<usize>(k)] = sign * res.den[as<usize>(k)];
     }
     return res;
 }
@@ -535,6 +739,10 @@ PadeResult pade_delay(f64 t, i32 order, Allocator* alloc) {
 
 ResidueResult residue(ArrayRef<f64> b, ArrayRef<f64> a, Allocator* alloc) {
     ResidueResult out{Status::Ok, Array<c64>(alloc), Array<c64>(alloc), Array<f64>(alloc)};
+    if (!all_finite_f64(b) || !all_finite_f64(a)) {
+        out.status = Status::InvalidInput;
+        return out;
+    }
     Array<f64> a_poly = strip_leading_copy(a, alloc);
     Array<f64> b_poly = strip_leading_copy(b, alloc);
     if (a_poly.empty() || a_poly[0] == 0.0) {
@@ -602,18 +810,8 @@ ResidueResult residue(ArrayRef<f64> b, ArrayRef<f64> a, Allocator* alloc) {
                 if (abs(g.p.imag()) < 5e-4 * (1.0 + abs(g.p))) {
                     g.p = c64(g.p.real(), 0.0);
                 }
-                const f64 m_d = as<f64>(g.m);
-                for (i32 it = 0; it < 30; ++it) {
-                    const c64 fv = polyval(ArrayRef<c64>(a_cx.data(), a_cx.size()), g.p);
-                    c64 dacc(0.0, 0.0);
-                    for (usize k = 0; k + 1 < a_cx.size(); ++k) {
-                        dacc = dacc * g.p + a_cx[k] * as<f64>(a_cx.size() - 1 - k);
-                    }
-                    if (abs(dacc) < 1e-300) break;
-                    const c64 step = m_d * fv / dacc;
-                    g.p -= step;
-                    if (abs(step) < 1e-15 * (1.0 + abs(g.p))) break;
-                }
+                g.p = refine_multiple_root_real_poly(
+                    ArrayRef<c64>(a_cx.data(), a_cx.size()), g.p, g.m, alloc);
             }
             groups.push_back(g);
         }
@@ -723,12 +921,18 @@ ResidueResult residue(ArrayRef<f64> b, ArrayRef<f64> a, Allocator* alloc) {
 
 ResidueResult residuez(ArrayRef<f64> b, ArrayRef<f64> a, Allocator* alloc) {
     ResidueResult out{Status::Ok, Array<c64>(alloc), Array<c64>(alloc), Array<f64>(alloc)};
-    Array<f64> a_poly = strip_leading_copy(a, alloc);
-    Array<f64> b_poly = strip_leading_copy(b, alloc);
-    if (a_poly.empty() || a_poly[0] == 0.0) {
+    if (!all_finite_f64(b) || !all_finite_f64(a)) {
+        out.status = Status::InvalidInput;
+        return out;
+    }
+    if (a.empty() || a[0] == 0.0) {
         out.status = Status::ZeroDivisor;
         return out;
     }
+    // In z^-1 ascending powers, trailing zeros are redundant high-power terms;
+    // leading zeros in b represent genuine z^-k delays and MUST be preserved.
+    Array<f64> a_poly = strip_trailing_copy(a, alloc);
+    Array<f64> b_poly = strip_trailing_copy(b, alloc);
 
     const f64 a0 = a_poly[0];
     for (usize i = 0; i < a_poly.size(); ++i) a_poly[i] /= a0;
@@ -743,8 +947,12 @@ ResidueResult residuez(ArrayRef<f64> b, ArrayRef<f64> a, Allocator* alloc) {
 
     const usize nres = la - 1;
     Array<f64> bp(alloc);
-    bp.resize(lb0);
-    for (usize i = 0; i < lb0; ++i) bp[i] = b_poly[i];
+    if (lb0 == 0) {
+        bp.push_back(0.0);
+    } else {
+        bp.resize(lb0);
+        for (usize i = 0; i < lb0; ++i) bp[i] = b_poly[i];
+    }
 
     if (lb0 > nres) {
         Array<f64> bf(alloc);
@@ -796,6 +1004,10 @@ ResidueResult residuez(ArrayRef<f64> b, ArrayRef<f64> a, Allocator* alloc) {
     Array<usize> mults(alloc);
     mults.reserve(m);
     {
+        Array<c64> a_cx(alloc);
+        a_cx.resize(a_poly.size());
+        for (usize i = 0; i < a_poly.size(); ++i) a_cx[i] = c64(a_poly[i], 0.0);
+
         Array<u8> used(alloc);
         used.resize(m);
         for (usize i = 0; i < m; ++i) used[i] = 0;
@@ -813,13 +1025,25 @@ ResidueResult residuez(ArrayRef<f64> b, ArrayRef<f64> a, Allocator* alloc) {
             }
             const f64 thresh = all_nonzero ? (kMpolesTol * abs(poles[i])) : kMpolesTol;
             usize count = 0;
+            c64 sum_p(0.0, 0.0);
+            const usize group_start = grouped.size();
             for (usize k = i; k < m; ++k) {
                 if (!used[k] && abs(poles[k] - poles[i]) < thresh) {
                     used[k] = 1;
                     grouped.push_back(poles[k]);
+                    sum_p += poles[k];
                     ++count;
                     mults.push_back(count);
                 }
+            }
+            if (count > 1) {
+                c64 p_ref = sum_p / as<f64>(count);
+                if (abs(p_ref.imag()) < 5e-4 * (1.0 + abs(p_ref))) {
+                    p_ref = c64(p_ref.real(), 0.0);
+                }
+                p_ref = refine_multiple_root_real_poly(
+                    ArrayRef<c64>(a_cx.data(), a_cx.size()), p_ref, count, alloc);
+                for (usize k = 0; k < count; ++k) grouped[group_start + k] = p_ref;
             }
         }
         poles = move(grouped);
@@ -932,6 +1156,10 @@ ResidueResult residuez(ArrayRef<f64> b, ArrayRef<f64> a, Allocator* alloc) {
                 swap(atb[col], atb[piv]);
             }
             const c64 d = ata[col * nm + col];
+            if (abs(d) < 1e-300) {
+                out.status = Status::DegeneratePole;
+                return out;
+            }
             for (usize c = col; c < nm; ++c) ata[col * nm + c] /= d;
             atb[col] /= d;
             for (usize r = 0; r < nm; ++r) {

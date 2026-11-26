@@ -5,11 +5,12 @@ Zero-STL C++20 numerical polynomial algorithms built on [`keel`](https://github.
 ## Features
 
 - **Evaluation**: Horner scalar/batch evaluation (`polyval`, `polyval_batch`, `horner_deriv`) and matrix polynomial evaluation (`polyvalm`)
-- **Roots & expansion**: Durand–Kerner simultaneous root finder (`roots`) and root-to-polynomial expansion (`from_roots`, `from_roots_c64`)
+- **Roots & expansion**: Scaled Aberth–Ehrlich simultaneous root finder with power-of-two Fujiwara scaling and reciprocal Horner evaluation (`roots`), plus root-to-polynomial expansion (`from_roots`, `from_roots_c64`)
 - **Arithmetic & calculus**: multiplication (`mul`), Euclidean division (`div`), derivative & quotient derivative (`deriv`, `deriv_ratio`), antiderivative (`integ`)
-- **Fitting**: Householder QR Vandermonde polynomial least-squares fitting (`polyfit`)
-- **Approximation & rational expansion**: Padé time-delay approximants (`pade_delay`), s-domain (`residue`) and z-domain (`residuez`) partial fraction expansion with simple and repeated pole support
+- **Fitting**: Centered/scaled Householder QR Vandermonde polynomial least-squares fitting (`polyfit`)
+- **Approximation & rational expansion**: Overflow-safe monic Padé time-delay approximants (`pade_delay`), s-domain (`residue`) and z-domain (`residuez`) partial fraction expansion with refined repeated poles
 - Zero STL headers in public headers and implementation; full `-fno-exceptions -fno-rtti` support
+- Differential reference test suite (`tests/verify_reference.py`) validated against NumPy, SciPy, and MATLAB
 
 ## Usage
 
